@@ -1,7 +1,7 @@
 #  Copyright: Copyright (c) 2020., <AUTHOR>
 #  Author: <AUTHOR> <EMAIL>
 #  License: See LICENSE.txt
-
+import operator
 from optparse import OptionParser
 
 from beets.library import Library
@@ -85,15 +85,33 @@ class GenreFixerCommand(Subcommand):
     def process_item(self, item: Item):
         self._say("Fixing item: {}".format(item), log_only=True)
 
-        dp = self.dataproviders[0]
-
         # Musicbrainz
-        tags = dp.query_artist(item.get("artist"))
+        dp = self.dataproviders[0]
+        self._say("{}: Musicbrainz".format("=" * 60))
+        resp = dp.query_artist(item.get("artist"))
+        tags = common.get_normalized_tags(resp)
+        tags = {common.get_formatted_tag(k): v for k, v in tags.items()}
+        tags = sorted(tags.items(), key=operator.itemgetter(1), reverse=True)
+
         self._say("Artist tags: {}".format(tags), log_only=False)
 
-        tags = dp.query_album(item.get("mb_releasegroupid"),
+        resp = dp.query_album(item.get("mb_releasegroupid"),
                               artist=item.get("artist"), year=item.get("year"))
+        tags = common.get_normalized_tags(resp)
+        tags = {common.get_formatted_tag(k): v for k, v in tags.items()}
+        tags = sorted(tags.items(), key=operator.itemgetter(1), reverse=True)
         self._say("Album tags: {}".format(tags), log_only=False)
+
+        # LastFM
+        # dp = self.dataproviders[1]
+        # self._say("{}: LastFM".format("="*60))
+        # tags = common.get_normalized_tags(dp.query_artist(item.get("artist")))
+        # self._say("Artist tags: {}".format(tags), log_only=False)
+        #
+        # tags = common.get_normalized_tags(dp.query_album(item.get("album"),
+        #                                             artist=item.get(
+        #                                             "artist")))
+        # self._say("Album tags: {}".format(tags), log_only=False)
 
     def retrieve_library_items(self):
         cmd_query = self.query

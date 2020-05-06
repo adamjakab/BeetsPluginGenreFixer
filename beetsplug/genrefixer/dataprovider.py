@@ -49,7 +49,7 @@ except ImportError:
 
 HEADERS = {'User-Agent': '{}/{}'.format(__PACKAGE_TITLE__, __version__)}
 
-LASTFM_API_KEY = ''
+LASTFM_API_KEY = '591ad4cbbece4ab4562b26b16a47f6dd'
 
 DISCOGS_KEY = ''
 DISCOGS_SECRET = ''

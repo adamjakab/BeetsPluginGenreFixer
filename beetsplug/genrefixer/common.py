@@ -25,6 +25,28 @@ def say(msg, log_only=True, is_error=False):
     __logger__.log(level=_level, msg=msg)
 
 
+def get_formatted_tag(tag):
+    """Format a tag to correct case."""
+    words = tag.split(' ')
+    for i, word in enumerate(words):
+        if len(word) < 3:
+            words[i] = word.upper()
+        else:
+            words[i] = word.title()
+    return ' '.join(words)
+
+
+def get_normalized_tags(dp_response, _min=0.1):
+    tags = {}
+    if len(dp_response) == 1 and 'tags' in dp_response[0]:
+        tags = dp_response[0]["tags"]
+        _max = max(tags.values())
+        tags = {k: round(v / _max, 3) for k, v in tags.items()
+                if v / _max >= _min}
+
+    return tags
+
+
 def setup_dataproviders(provider_config: Subview):
     providers = []
     for pk in provider_config:
