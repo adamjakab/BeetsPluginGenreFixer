@@ -51,21 +51,21 @@ HEADERS = {'User-Agent': '{}/{}'.format(__PACKAGE_TITLE__, __version__)}
 
 LASTFM_API_KEY = '591ad4cbbece4ab4562b26b16a47f6dd'
 
-DISCOGS_KEY = ''
-DISCOGS_SECRET = ''
+DISCOGS_KEY = 'QjmavLUJaDliuMrmBxtS'
+DISCOGS_SECRET = 'rmzzSLnKAelpkuDhapIvEBVNWohYzBGI'
 
 
 def factory(name, conf):
     """Factory for DataProviders."""
     if name == 'discogs':
-        dapr = Discogs(conf)
+        p = Discogs(conf)
     elif name == 'lastfm':
-        dapr = LastFM()
+        p = LastFM(conf)
     elif name == 'mbrainz':
-        dapr = MusicBrainz()
+        p = MusicBrainz(conf)
     else:
         raise DataProviderError('unknown dataprovider: %s' % name)
-    return dapr
+    return p
 
 
 def get_stats(daprs):
@@ -96,7 +96,10 @@ class DataProviderError(Exception):
 class DataProvider(object):
     """Base class for DataProviders."""
 
-    def __init__(self):
+    conf = None
+
+    def __init__(self, conf):
+        self.conf = conf
         self.log = logging.getLogger(__name__)
         self.name = self.__class__.__name__
         self.rate_limit = 1.0  # min. seconds between requests
@@ -187,15 +190,15 @@ class DataProvider(object):
             value = self.stats['goodtags'] / self.stats['tags']
         return value
 
-    def query_artist(self, artist):
+    def query_artist(self, metadata):
         """Query for artist data."""
         raise NotImplementedError()
 
-    def query_album(self, album, artist=None, year=None, reltyp=None):
+    def query_album(self, metadata):
         """Query for album data."""
         raise NotImplementedError()
 
-    def query_by_mbid(self, entity, mbid):
+    def query_by_mbid(self, metadata):
         """Query by mbid."""
         raise NotImplementedError()
 
@@ -204,8 +207,9 @@ class Discogs(DataProvider):
     """Discogs DataProvider"""
 
     def __init__(self, conf):
-        super(Discogs, self).__init__()
+        super(Discogs, self).__init__(conf)
         import rauth
+
         # http://www.discogs.com/developers/#header:home-rate-limiting
         self.rate_limit = 3.0
         self.conf = conf
@@ -215,16 +219,26 @@ class Discogs(DataProvider):
             request_token_url='https://api.discogs.com/oauth/request_token',
             access_token_url='https://api.discogs.com/oauth/access_token',
             authorize_url='https://www.discogs.com/oauth/authorize')
+
         token = self._get_token_from_config()
         if not token or not all(token):
+            # raise RuntimeError("No Discogs token in configuration!")
             token = self._get_token_from_user()
-            self._save_token_to_config(token)
+            # raises KeyError
+            print("Got token: {}".format(token))
+            print("Please save this information in your configuration.")
+            exit(1)
+
         self.session = self.discogs.get_session(token)
         self._setup_session()
-        # avoid filling cache with unusable entries
-        if requests_cache \
-                and not hasattr(self.session.cache, '_ignored_parameters'):
-            self.session._is_cache_disabled = True  # pylint: disable=W0212
+
+    def _get_token_from_config(self):
+        """Get token from config file."""
+        token = None
+        if self.conf['token'].exists() and self.conf['secret'].exists():
+            token = (self.conf['token'].as_str(),
+                     self.conf['secret'].as_str())
+        return token
 
     def _get_token_from_user(self):
         """Get token from user without requests_cache."""
@@ -253,30 +267,15 @@ class Discogs(DataProvider):
         else:
             return get_token_from_user()
 
-    def _get_token_from_config(self):
-        """Get token from config file."""
-        token = None
-        try:
-            token = (self.conf.get('discogs', 'token'),
-                     self.conf.get('discogs', 'secret'))
-        except (NoSectionError, NoOptionError):
-            pass
-        return token
-
-    def _save_token_to_config(self, token):
-        """Save token to config file."""
-        if not self.conf.has_section('discogs'):
-            self.conf.add_section('discogs')
-        self.conf.set('discogs', 'token', token[0])
-        self.conf.set('discogs', 'secret', token[1])
-        self.conf.save()
-
-    def query_artist(self, artist):
+    def query_artist(self, metadata):
         """Query for artist data."""
         raise NotImplementedError()
 
-    def query_album(self, album, artist=None, year=None, reltyp=None):
+    def query_album(self, metadata):
         """Query for album data."""
+        artist = metadata["artist"]
+        album = metadata["album"]
+
         params = {'release_title': album}
         if artist:
             params.update({'artist': artist})
@@ -292,7 +291,7 @@ class Discogs(DataProvider):
                     tags.update(res.get(key))
         return [{'tags': {tag: 0 for tag in tags}}]
 
-    def query_by_mbid(self, entity, mbid):
+    def query_by_mbid(self, metadata):
         """Query by mbid."""
         raise NotImplementedError()
 
@@ -300,8 +299,8 @@ class Discogs(DataProvider):
 class LastFM(DataProvider):
     """Last.FM DataProvider"""
 
-    def __init__(self):
-        super(LastFM, self).__init__()
+    def __init__(self, conf):
+        super(LastFM, self).__init__(conf)
         # http://lastfm.de/api/tos
         self.rate_limit = .25
 
@@ -322,17 +321,20 @@ class LastFM(DataProvider):
             tags = {t['name']: int(t.get('count', 0)) for t in tags}
         return [{'tags': tags}]
 
-    def query_artist(self, artist):
+    def query_artist(self, metadata):
         """Query for artist data."""
+        artist = metadata["artist"]
         return self._query({'method': 'artist.gettoptags', 'artist': artist})
 
-    def query_album(self, album, artist=None, year=None, reltyp=None):
+    def query_album(self, metadata):
         """Query for album data."""
+        artist = metadata["artist"]
+        album = metadata["album"]
         return self._query({'method': 'album.gettoptags', 'album': album,
                             'artist': artist or 'Various Artists'
                             })
 
-    def query_by_mbid(self, entity, mbid):
+    def query_by_mbid(self, metadata):
         """Query by mbid."""
         if entity == 'album':
             # FIXME: seems broken at the moment,
@@ -346,8 +348,8 @@ class LastFM(DataProvider):
 class MusicBrainz(DataProvider):
     """MusicBrainz DataProvider"""
 
-    def __init__(self):
-        super(MusicBrainz, self).__init__()
+    def __init__(self, conf):
+        super(MusicBrainz, self).__init__(conf)
         # http://musicbrainz.org/doc/XML_Web_Service/Rate_Limiting
         self.rate_limit = 2.0
         self.name = 'MBrainz'
@@ -368,16 +370,20 @@ class MusicBrainz(DataProvider):
                           for t in r.get('tags', {})}
                  } for r in result]
 
-    def query_artist(self, artist):
+    def query_artist(self, metadata):
         """Query for artist data."""
+        artist = metadata["artist"]
         return self._query('artist', {'query': 'artist: ' + artist})
 
-    def query_album(self, album, artist=None, year=None, reltyp=None):
+    def query_album(self, metadata):
         """Query for album data."""
-        return self._query('release-group' + '/' + album, {'inc': 'tags'})
+        albumid = metadata["albumid"]
+        return self._query('release-group' + '/' + albumid, {'inc': 'tags'})
 
-    def query_by_mbid(self, entity, mbid):
+    def query_by_mbid(self, metadata):
         """Query by mbid."""
+        entity = metadata["entity"]
+        mbid = metadata["mbid"]
         self.log.debug("%-8s %-6s use mbid '%s'.", self.name, entity, mbid)
         if entity == 'album':
             entity = 'release-group'

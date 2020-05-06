@@ -37,7 +37,7 @@ setup(
     python_requires='>=3.6',
 
     install_requires=[
-        'beets>=1.4.9', 'requests'
+        'beets>=1.4.9', 'requests', 'rauth'
     ],
 
     tests_require=[

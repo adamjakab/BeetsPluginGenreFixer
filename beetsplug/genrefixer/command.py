@@ -84,34 +84,40 @@ class GenreFixerCommand(Subcommand):
 
     def process_item(self, item: Item):
         self._say("Fixing item: {}".format(item), log_only=True)
+        qtypes = ['artist', 'album', 'track']
 
-        # Musicbrainz
-        dp = self.dataproviders[0]
-        self._say("{}: Musicbrainz".format("=" * 60))
-        resp = dp.query_artist(item.get("artist"))
+        metadata = {
+            'artist': item.get("artist"),
+            'artistid': item.get("mb_artistid:"),
+            'album': item.get("album"),
+            'albumid': item.get("mb_releasegroupid"),
+            'year': item.get("year")
+        }
+
+        for dp in self.dataproviders:
+            self._say("{}: {}".format("=" * 60, dp.name))
+            for qtype in qtypes:
+                tags = self.get_tags_from_provider(dp, qtype, metadata)
+                self._say("tags[{}]: {}".format(qtype, tags), log_only=False)
+
+    def get_tags_from_provider(self, dp, qtype="album", metadata=None):
+        resp = []
+
+        try:
+            if qtype == "artist":
+                resp = dp.query_artist(metadata)
+            elif qtype == "album":
+                resp = dp.query_album(metadata)
+            else:
+                self._say("Unknown query type: {}".format(qtype), is_error=True)
+        except NotImplementedError:
+            pass
+
         tags = common.get_normalized_tags(resp)
         tags = {common.get_formatted_tag(k): v for k, v in tags.items()}
         tags = sorted(tags.items(), key=operator.itemgetter(1), reverse=True)
 
-        self._say("Artist tags: {}".format(tags), log_only=False)
-
-        resp = dp.query_album(item.get("mb_releasegroupid"),
-                              artist=item.get("artist"), year=item.get("year"))
-        tags = common.get_normalized_tags(resp)
-        tags = {common.get_formatted_tag(k): v for k, v in tags.items()}
-        tags = sorted(tags.items(), key=operator.itemgetter(1), reverse=True)
-        self._say("Album tags: {}".format(tags), log_only=False)
-
-        # LastFM
-        # dp = self.dataproviders[1]
-        # self._say("{}: LastFM".format("="*60))
-        # tags = common.get_normalized_tags(dp.query_artist(item.get("artist")))
-        # self._say("Artist tags: {}".format(tags), log_only=False)
-        #
-        # tags = common.get_normalized_tags(dp.query_album(item.get("album"),
-        #                                             artist=item.get(
-        #                                             "artist")))
-        # self._say("Album tags: {}".format(tags), log_only=False)
+        return tags
 
     def retrieve_library_items(self):
         cmd_query = self.query
