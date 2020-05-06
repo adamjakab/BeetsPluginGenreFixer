@@ -1,1 +1,8 @@
 auto: no
+providers:
+  discogs:
+    enabled: no
+  mbrainz:
+    enabled: no
+  lastfm:
+    enabled: no

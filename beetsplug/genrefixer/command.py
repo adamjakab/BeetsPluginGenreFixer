@@ -6,6 +6,9 @@ from optparse import OptionParser
 
 from beets.library import Library
 from beets.ui import Subcommand, decargs
+from beets.dbcore.query import MatchQuery, AndQuery, OrQuery, \
+    NoneQuery, RegexpQuery
+from beets.library import Library, Item, parse_query_parts
 from beets.util.confit import Subview
 
 from beetsplug.genrefixer import common
@@ -17,6 +20,10 @@ class GenreFixerCommand(Subcommand):
     query = None
     parser: OptionParser = None
 
+    dataproviders = None
+
+    cfg_force = False
+
     def __init__(self, cfg):
         self.config = cfg
 
@@ -24,6 +31,14 @@ class GenreFixerCommand(Subcommand):
             usage='beet {plg} [options] [QUERY...]'.format(
                 plg=common.plg_ns['__PLUGIN_NAME__']
             ))
+
+        self.parser.add_option(
+            '-f', '--force',
+            action='store_true', dest='force', default=self.cfg_force,
+            help=u'[default: {}] force analysis of items with non-zero bpm '
+                 u'values'.format(
+                self.cfg_force)
+        )
 
         self.parser.add_option(
             '-v', '--version',
@@ -43,6 +58,8 @@ class GenreFixerCommand(Subcommand):
         self.lib = lib
         self.query = decargs(arguments)
 
+        self.cfg_force = options.force
+
         if options.version:
             self.show_version_information()
             return
@@ -50,7 +67,50 @@ class GenreFixerCommand(Subcommand):
         self.handle_main_task()
 
     def handle_main_task(self):
-        self._say("Your journey starts here...", log_only=False)
+        items = self.retrieve_library_items()
+        if not items:
+            self._say("Your query did not produce any results.", log_only=False)
+            return
+
+        self.dataproviders = common.setup_dataproviders(
+            self.config["providers"])
+
+        # for item in items:
+        if True:
+            item = items[0]
+            self.process_item(item)
+            # item.try_write()
+            # item.store()
+
+    def process_item(self, item: Item):
+        self._say("Fixing item: {}".format(item), log_only=True)
+
+        dp = self.dataproviders[0]
+
+        # Musicbrainz
+        tags = dp.query_artist(item.get("artist"))
+        self._say("Artist tags: {}".format(tags), log_only=False)
+
+        tags = dp.query_album(item.get("mb_releasegroupid"),
+                              artist=item.get("artist"), year=item.get("year"))
+        self._say("Album tags: {}".format(tags), log_only=False)
+
+    def retrieve_library_items(self):
+        cmd_query = self.query
+        parsed_cmd_query, parsed_ordering = parse_query_parts(cmd_query, Item)
+
+        if self.cfg_force:
+            full_query = parsed_cmd_query
+        else:
+            parsed_plg_query = OrQuery([
+                RegexpQuery('genre', '^$'),
+                RegexpQuery('genre', '[/,]'),
+            ])
+            full_query = AndQuery([parsed_cmd_query, parsed_plg_query])
+
+        self._say("Selection query: {}".format(full_query))
+
+        return self.lib.items(full_query, parsed_ordering)
 
     def show_version_information(self):
         self._say("{pt}({pn}) plugin for Beets: v{ver}".format(
