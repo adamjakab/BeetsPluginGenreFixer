@@ -85,9 +85,10 @@ class DataProviderError(Exception):
 
 class DataProvider(object):
     """Base class for DataProviders."""
+    conf = None
 
     cache = {}
-    conf = None
+    unsaved_in_jar = 0
 
     def __init__(self, conf):
         self.conf = conf
@@ -101,21 +102,25 @@ class DataProvider(object):
         self.open_pickle_jar()
 
     def open_pickle_jar(self):
+        self.unsaved_in_jar = 0
         try:
             with open(self.get_pickle_file_name(), 'rb') as f:
                 self.cache = pickle.load(f)
         except Exception as exc:
             self.cache = {}
 
-    def close_pickle_jar(self):
+    def store_pickle_jar(self):
         try:
             with open(self.get_pickle_file_name(), 'wb') as f:
                 pickle.dump(self.cache, f)
+                self.unsaved_in_jar = 0
         except IOError as exc:
             pass
 
     def get_pickle_file_name(self):
-        return os.path.join(os.environ['BEETSDIR'],
+        _dir = os.environ['BEETSDIR'] if 'BEETSDIR' in os.environ else \
+            os.path.expanduser('~/.config/beets')
+        return os.path.join(_dir,
                             'dp-cache-{}.pickle'.format(self.name).lower())
 
     def _get_cache_id(self, path, params):
@@ -124,7 +129,7 @@ class DataProvider(object):
         return cid
 
     def _get_cached_data(self, cid):
-        res = []
+        res = None
         if cid in self.cache:
             res = self.cache[cid]
             # print("Reusing cache({}): {}".format(cid, res))
@@ -134,6 +139,9 @@ class DataProvider(object):
     def _set_cached_data(self, cid, res):
         # print("Storing in cache({}): {}".format(cid, res))
         self.cache[cid] = res
+        self.unsaved_in_jar += 1
+        if self.unsaved_in_jar == 33:
+            self.store_pickle_jar()
 
     def _setup_session(self):
         """Set session headers and mount HTTPAdapters with retries."""
@@ -286,7 +294,8 @@ class Discogs(DataProvider):
         cid = self._get_cache_id("", params)
         res = self._get_cached_data(cid)
 
-        if not res:
+        if res is None:
+            # print("Discogs({}): ".format(cid))
             result = self._request_json(
                 'https://api.discogs.com/database/search', params)
 
@@ -326,7 +335,8 @@ class LastFM(DataProvider):
         cid = self._get_cache_id("", params)
         res = self._get_cached_data(cid)
 
-        if not res:
+        if res is None:
+            # print("lastFM({}): {}".format(cid, json.dumps(params)))
             """Query Last.FM API."""
             params.update({'format': 'json',
                            'api_key': LASTFM_API_KEY
@@ -335,13 +345,16 @@ class LastFM(DataProvider):
                                         params)
             if 'error' in result:
                 self.log.debug('%-8s error: %s', self.name, result['message'])
-                return None
-            tags = result['toptags'].get('tag')
-            if tags:
-                if not isinstance(tags, list):
-                    tags = [tags]
-                tags = {t['name']: int(t.get('count', 0)) for t in tags}
-            res = [{'tags': tags}]
+                res = []
+            else:
+                tags = result['toptags'].get('tag')
+                if tags:
+                    if not isinstance(tags, list):
+                        tags = [tags]
+                    tags = {t['name']: int(t.get('count', 0)) for t in tags}
+                    res = [{'tags': tags}]
+                else:
+                    res = []
             self._set_cached_data(cid, res)
 
         return res
@@ -372,23 +385,27 @@ class MusicBrainz(DataProvider):
     def _query(self, path, params):
         cid = self._get_cache_id(path, params)
         res = self._get_cached_data(cid)
-        if not res:
+
+        if res is None:
+            # print("MB({}): ".format(cid))
             """Query MusicBrainz."""
             params.update({'fmt': 'json', 'limit': 1})
             result = self._request_json(
                 'http://musicbrainz.org/ws/2/' + path, params)
+
             if 'error' in result:
                 self.log.debug('%-8s error: %s', self.name, result['error'])
-                return None
-            if 'query' in params:
-                result = result[path + 's']
-            else:  # by mbid
-                result = [result]
+                res = []
+            else:
+                if 'query' in params:
+                    result = result[path + 's']
+                else:  # by mbid
+                    result = [result]
 
-            res = [{'tags': {t['name']: int(t.get('count', 0))
-                             for t in r.get('tags', {})}
-                    }
-                   for r in result]
+                res = [{'tags': {t['name']: int(t.get('count', 0))
+                                 for t in r.get('tags', {})}
+                        }
+                       for r in result]
             self._set_cached_data(cid, res)
 
         return res

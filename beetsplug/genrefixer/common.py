@@ -38,17 +38,17 @@ def get_formatted_tag(tag):
 
 def get_normalized_tags(dp_response, _min=0.1):
     tags = {}
-    if len(dp_response) == 1 and 'tags' in dp_response[0]:
-        tags = dp_response[0]["tags"]
-        if len(tags):
-            _max = max(tags.values())
+    if dp_response and len(dp_response) == 1 and 'tags' in dp_response[0]:
+        t = dp_response[0]["tags"]
+        if len(t):
+            _max = max(t.values())
             if _max == 0:
                 score = 1
-                tags = {it[0]: score / (i + 1) for i, it in
-                        enumerate(tags.items())}
-                _max = max(tags.values())
+                t = {it[0]: score / (i + 1) for i, it in
+                     enumerate(t.items())}
+                _max = max(t.values())
 
-            tags = {k: round(v / _max, 3) for k, v in tags.items()
+            tags = {k: round(v / _max, 3) for k, v in t.items()
                     if v / _max >= _min}
 
     return tags

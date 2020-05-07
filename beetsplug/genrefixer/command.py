@@ -7,7 +7,7 @@ from optparse import OptionParser
 from beets.library import Library
 from beets.ui import Subcommand, decargs
 from beets.dbcore.query import MatchQuery, AndQuery, OrQuery, \
-    NoneQuery, RegexpQuery
+    NoneQuery, RegexpQuery, FixedFieldSort
 from beets.library import Library, Item, parse_query_parts
 from beets.util.confit import Subview
 
@@ -22,10 +22,20 @@ class GenreFixerCommand(Subcommand):
 
     dataproviders = None
 
+    _HATE_LIST_ = []
+    _DISLIKE_LIST_ = []
+    _LIKE_LIST_ = []
+    _LOVE_LIST_ = []
+
     cfg_force = False
 
     def __init__(self, cfg):
         self.config = cfg
+
+        self._HATE_LIST_ = self.config["hate_list"].get()
+        self._DISLIKE_LIST_ = self.config["dislike_list"].get()
+        self._LIKE_LIST_ = self.config["like_list"].get()
+        self._LOVE_LIST_ = self.config["love_list"].get()
 
         self.parser = OptionParser(
             usage='beet {plg} [options] [QUERY...]'.format(
@@ -66,6 +76,7 @@ class GenreFixerCommand(Subcommand):
 
         self.setup_command()
         self.handle_main_task()
+        self.shutdown_command()
 
     def setup_command(self):
         self.dataproviders = common.setup_dataproviders(
@@ -74,7 +85,7 @@ class GenreFixerCommand(Subcommand):
     def shutdown_command(self):
         # Shutdown dataproviders - saves cache
         for dp in self.dataproviders:
-            dp.close_pickle_jar()
+            dp.store_pickle_jar()
 
     def handle_main_task(self):
         items = self.retrieve_library_items()
@@ -89,12 +100,12 @@ class GenreFixerCommand(Subcommand):
                 item.store()
 
                 # store genre on album as well
-                current_album = item.get("mb_releasegroupid")
-                if current_album != last_album:
-                    album = item.get_album()
-                    album["genre"] = item["genre"]
-                    album.store()
-                    last_album = current_album
+                # current_album = item.get("mb_releasegroupid")
+                # if current_album != last_album:
+                #     album = item.get_album()
+                #     album["genre"] = item["genre"]
+                #     album.store()
+                #     last_album = current_album
 
     def process_item(self, item: Item):
         self._say("Fixing item: {}".format(item), log_only=True)
@@ -128,20 +139,46 @@ class GenreFixerCommand(Subcommand):
         tags = self.create_unified_tag_list(tag_groups)
         # self._say("Unified Tags: {}".format(tags), log_only=False)
 
+        tags = self.get_scored_tags(tags)
+        # self._say("Scored Tags: {}".format(tags), log_only=False)
+
         tags = sorted(tags.items(), key=operator.itemgetter(1), reverse=True)
-        # self._say("Ordered Tags: {}".format(tags), log_only=False)
+        self._say("Ordered Tags: {}".format(tags), log_only=False)
 
         _max = self.config["max_tags"].as_number()
         _glue = self.config["tag_glue"].as_str()
         top_tags = [v[0] for v in tags][:_max]
         # self._say("Top Tags: {}".format(top_tags), log_only=False)
 
-        new_genre = _glue.join(top_tags)
-        self._say("Genre: {}".format(new_genre), log_only=False)
+        changed = False
+        if top_tags:
+            new_genre = _glue.join(top_tags)
+            if new_genre != current_genre:
+                self._say("Setting new genre: '{}' -> '{}'"
+                          .format(current_genre, new_genre), log_only=False)
+                item["genre"] = new_genre
+                changed = True
 
-        item["genre"] = new_genre
+        return changed
 
-        return current_genre != new_genre
+    def get_scored_tags(self, tags):
+
+        for k, v in tags.items():
+            m = 1
+            if k in self._HATE_LIST_:
+                m = 0
+            elif k in self._DISLIKE_LIST_:
+                m = 0.5
+            elif k in self._LIKE_LIST_:
+                m = 1.5
+            elif k in self._LOVE_LIST_:
+                m = 3
+
+            n = round(v * m, 3)
+            # self._say("'{}': '{}' --(x{})--> {}".format(k,v,m,n))
+            tags[k] = n
+
+        return tags
 
     def create_unified_tag_list(self, tag_groups):
         ulist = {}
@@ -181,6 +218,7 @@ class GenreFixerCommand(Subcommand):
     def retrieve_library_items(self):
         cmd_query = self.query
         parsed_cmd_query, parsed_ordering = parse_query_parts(cmd_query, Item)
+        parsed_ordering = FixedFieldSort("albumartist", ascending=True)
 
         if self.cfg_force:
             full_query = parsed_cmd_query
