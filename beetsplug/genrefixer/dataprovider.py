@@ -22,30 +22,20 @@ Contains classes for querying APIs of some music related sites.
 
 from __future__ import division, print_function, unicode_literals
 
+import json
 import logging
+import os
 import os.path
 import time
 from collections import defaultdict
 from configparser import NoSectionError, NoOptionError
 from datetime import timedelta
+import hashlib
+import pickle
 
 import requests
 
 from beetsplug.genrefixer.about import __PACKAGE_TITLE__, __version__
-
-try:  # use optional requests_cache if available
-    import requests_cache
-
-    requests_cache.install_cache(
-        os.path.expanduser('~/.whatlastgenre/reqcache'),
-        expire_after=timedelta(days=180),
-        allowable_codes=(200, 404),
-        allowable_methods=('GET', 'POST'),
-        ignored_parameters=['oauth_timestamp',
-                            'oauth_nonce',
-                            'oauth_signature'])
-except ImportError:
-    requests_cache = None
 
 HEADERS = {'User-Agent': '{}/{}'.format(__PACKAGE_TITLE__, __version__)}
 
@@ -61,7 +51,7 @@ def factory(name, conf):
         p = Discogs(conf)
     elif name == 'lastfm':
         p = LastFM(conf)
-    elif name == 'mbrainz':
+    elif name == 'musicbrainz':
         p = MusicBrainz(conf)
     else:
         raise DataProviderError('unknown dataprovider: %s' % name)
@@ -96,17 +86,54 @@ class DataProviderError(Exception):
 class DataProvider(object):
     """Base class for DataProviders."""
 
+    cache = {}
     conf = None
 
     def __init__(self, conf):
         self.conf = conf
         self.log = logging.getLogger(__name__)
         self.name = self.__class__.__name__
-        self.rate_limit = 1.0  # min. seconds between requests
+        self.rate_limit = 1.0
         self.last_request = 0
         self.stats = defaultdict(float)
         self.session = requests.Session()
         self._setup_session()
+        self.open_pickle_jar()
+
+    def open_pickle_jar(self):
+        try:
+            with open(self.get_pickle_file_name(), 'rb') as f:
+                self.cache = pickle.load(f)
+        except Exception as exc:
+            self.cache = {}
+
+    def close_pickle_jar(self):
+        try:
+            with open(self.get_pickle_file_name(), 'wb') as f:
+                pickle.dump(self.cache, f)
+        except IOError as exc:
+            pass
+
+    def get_pickle_file_name(self):
+        return os.path.join(os.environ['BEETSDIR'],
+                            'dp-cache-{}.pickle'.format(self.name).lower())
+
+    def _get_cache_id(self, path, params):
+        ck = "{}-{}-{}".format(self.name, path, json.dumps(params))
+        cid = hashlib.md5(ck.encode('utf-8')).hexdigest()
+        return cid
+
+    def _get_cached_data(self, cid):
+        res = []
+        if cid in self.cache:
+            res = self.cache[cid]
+            # print("Reusing cache({}): {}".format(cid, res))
+
+        return res
+
+    def _set_cached_data(self, cid, res):
+        # print("Storing in cache({}): {}".format(cid, res))
+        self.cache[cid] = res
 
     def _setup_session(self):
         """Set session headers and mount HTTPAdapters with retries."""
@@ -198,10 +225,6 @@ class DataProvider(object):
         """Query for album data."""
         raise NotImplementedError()
 
-    def query_by_mbid(self, metadata):
-        """Query by mbid."""
-        raise NotImplementedError()
-
 
 class Discogs(DataProvider):
     """Discogs DataProvider"""
@@ -241,31 +264,44 @@ class Discogs(DataProvider):
         return token
 
     def _get_token_from_user(self):
-        """Get token from user without requests_cache."""
+        """Get token from user"""
 
-        def get_token_from_user():
-            """Get token from user."""
-            req_token, req_secret = self.discogs.get_request_token(
+        req_token, req_secret = self.discogs.get_request_token(
+            headers=HEADERS)
+        print('Discogs requires authentication with your own account.\n'
+              'Disable discogs in the config file or use this link to '
+              'authenticate:\n%s'
+              % self.discogs.get_authorize_url(req_token))
+        oauth_verifier = input('Verification code: ')
+        try:
+            token = self.discogs.get_access_token(
+                req_token, req_secret,
+                data={'oauth_verifier': oauth_verifier},
                 headers=HEADERS)
-            print('Discogs requires authentication with your own account.\n'
-                  'Disable discogs in the config file or use this link to '
-                  'authenticate:\n%s'
-                  % self.discogs.get_authorize_url(req_token))
-            oauth_verifier = input('Verification code: ')
-            try:
-                token = self.discogs.get_access_token(
-                    req_token, req_secret,
-                    data={'oauth_verifier': oauth_verifier},
-                    headers=HEADERS)
-            except KeyError as err:
-                raise RuntimeError(err.message)
-            return token
+        except KeyError as err:
+            raise RuntimeError(err.message)
+        return token
 
-        if requests_cache:
-            with self.discogs.get_session().cache_disabled():
-                return get_token_from_user()
-        else:
-            return get_token_from_user()
+    def _query(self, params):
+        cid = self._get_cache_id("", params)
+        res = self._get_cached_data(cid)
+
+        if not res:
+            result = self._request_json(
+                'https://api.discogs.com/database/search', params)
+
+            res = []
+            if result['results']:
+                tags = set()
+                for res in result['results']:
+                    if res['type'] in ['master', 'release']:
+                        for key in ['genre', 'style']:
+                            tags.update(res.get(key))
+                res = [{'tags': {tag: 0 for tag in tags}}]
+
+            self._set_cached_data(cid, res)
+
+        return res
 
     def query_artist(self, metadata):
         """Query for artist data."""
@@ -275,25 +311,7 @@ class Discogs(DataProvider):
         """Query for album data."""
         artist = metadata["artist"]
         album = metadata["album"]
-
-        params = {'release_title': album}
-        if artist:
-            params.update({'artist': artist})
-        result = self._request_json('https://api.discogs.com/database/search',
-                                    params)
-        if not result['results']:
-            return None
-        # merge all releases and masters
-        tags = set()
-        for res in result['results']:
-            if res['type'] in ['master', 'release']:
-                for key in ['genre', 'style']:
-                    tags.update(res.get(key))
-        return [{'tags': {tag: 0 for tag in tags}}]
-
-    def query_by_mbid(self, metadata):
-        """Query by mbid."""
-        raise NotImplementedError()
+        return self._query({'artist': artist, 'release_title': album})
 
 
 class LastFM(DataProvider):
@@ -305,21 +323,28 @@ class LastFM(DataProvider):
         self.rate_limit = .25
 
     def _query(self, params):
-        """Query Last.FM API."""
-        params.update({'format': 'json',
-                       'api_key': LASTFM_API_KEY
-                       })
-        result = self._request_json('http://ws.audioscrobbler.com/2.0/',
-                                    params)
-        if 'error' in result:
-            self.log.debug('%-8s error: %s', self.name, result['message'])
-            return None
-        tags = result['toptags'].get('tag')
-        if tags:
-            if not isinstance(tags, list):
-                tags = [tags]
-            tags = {t['name']: int(t.get('count', 0)) for t in tags}
-        return [{'tags': tags}]
+        cid = self._get_cache_id("", params)
+        res = self._get_cached_data(cid)
+
+        if not res:
+            """Query Last.FM API."""
+            params.update({'format': 'json',
+                           'api_key': LASTFM_API_KEY
+                           })
+            result = self._request_json('http://ws.audioscrobbler.com/2.0/',
+                                        params)
+            if 'error' in result:
+                self.log.debug('%-8s error: %s', self.name, result['message'])
+                return None
+            tags = result['toptags'].get('tag')
+            if tags:
+                if not isinstance(tags, list):
+                    tags = [tags]
+                tags = {t['name']: int(t.get('count', 0)) for t in tags}
+            res = [{'tags': tags}]
+            self._set_cached_data(cid, res)
+
+        return res
 
     def query_artist(self, metadata):
         """Query for artist data."""
@@ -334,15 +359,6 @@ class LastFM(DataProvider):
                             'artist': artist or 'Various Artists'
                             })
 
-    def query_by_mbid(self, metadata):
-        """Query by mbid."""
-        if entity == 'album':
-            # FIXME: seems broken at the moment,
-            # http error 400: artist param missing,
-            # resolve later when lastfm finished migration
-            raise NotImplementedError()
-        self.log.debug("%-8s %-6s use mbid '%s'.", self.name, entity, mbid)
-        return self._query({'method': entity + '.gettoptags', 'mbid': mbid})
 
 
 class MusicBrainz(DataProvider):
@@ -352,23 +368,30 @@ class MusicBrainz(DataProvider):
         super(MusicBrainz, self).__init__(conf)
         # http://musicbrainz.org/doc/XML_Web_Service/Rate_Limiting
         self.rate_limit = 2.0
-        self.name = 'MBrainz'
 
     def _query(self, path, params):
-        """Query MusicBrainz."""
-        params.update({'fmt': 'json', 'limit': 1})
-        result = self._request_json(
-            'http://musicbrainz.org/ws/2/' + path, params)
-        if 'error' in result:
-            self.log.debug('%-8s error: %s', self.name, result['error'])
-            return None
-        if 'query' in params:
-            result = result[path + 's']
-        else:  # by mbid
-            result = [result]
-        return [{'tags': {t['name']: int(t.get('count', 0))
-                          for t in r.get('tags', {})}
-                 } for r in result]
+        cid = self._get_cache_id(path, params)
+        res = self._get_cached_data(cid)
+        if not res:
+            """Query MusicBrainz."""
+            params.update({'fmt': 'json', 'limit': 1})
+            result = self._request_json(
+                'http://musicbrainz.org/ws/2/' + path, params)
+            if 'error' in result:
+                self.log.debug('%-8s error: %s', self.name, result['error'])
+                return None
+            if 'query' in params:
+                result = result[path + 's']
+            else:  # by mbid
+                result = [result]
+
+            res = [{'tags': {t['name']: int(t.get('count', 0))
+                             for t in r.get('tags', {})}
+                    }
+                   for r in result]
+            self._set_cached_data(cid, res)
+
+        return res
 
     def query_artist(self, metadata):
         """Query for artist data."""
@@ -380,11 +403,11 @@ class MusicBrainz(DataProvider):
         albumid = metadata["albumid"]
         return self._query('release-group' + '/' + albumid, {'inc': 'tags'})
 
-    def query_by_mbid(self, metadata):
-        """Query by mbid."""
-        entity = metadata["entity"]
-        mbid = metadata["mbid"]
-        self.log.debug("%-8s %-6s use mbid '%s'.", self.name, entity, mbid)
-        if entity == 'album':
-            entity = 'release-group'
-        return self._query(entity + '/' + mbid, {'inc': 'tags'})
+    # def query_by_mbid(self, metadata):
+    #     """Query by mbid."""
+    #     entity = metadata["entity"]
+    #     mbid = metadata["mbid"]
+    #     self.log.debug("%-8s %-6s use mbid '%s'.", self.name, entity, mbid)
+    #     if entity == 'album':
+    #         entity = 'release-group'
+    #     return self._query(entity + '/' + mbid, {'inc': 'tags'})

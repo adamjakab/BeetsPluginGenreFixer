@@ -42,9 +42,14 @@ def get_normalized_tags(dp_response, _min=0.1):
         tags = dp_response[0]["tags"]
         if len(tags):
             _max = max(tags.values())
-            if _max > 0:
-                tags = {k: round(v / _max, 3) for k, v in tags.items()
-                        if v / _max >= _min}
+            if _max == 0:
+                score = 1
+                tags = {it[0]: score / (i + 1) for i, it in
+                        enumerate(tags.items())}
+                _max = max(tags.values())
+
+            tags = {k: round(v / _max, 3) for k, v in tags.items()
+                    if v / _max >= _min}
 
     return tags
 

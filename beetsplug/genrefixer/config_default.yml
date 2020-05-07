@@ -1,8 +1,26 @@
 auto: no
+max_tags: 1
+tag_glue: ' / '
+hate_list: []
+dislike_list: []
+like_list: []
+love_list: []
+aliases:
+  'Rhythm & Blues': ['RnB', 'Rhythm And Blues']
+types:
+  artist:
+    weight: 0.5
+  album:
+    weight: 0.75
 providers:
   discogs:
     enabled: no
-  mbrainz:
-    enabled: no
+    weight: 1
+    token: ''
+    secret: ''
+  musicbrainz:
+    enabled: yes
+    weight: 0.8
   lastfm:
-    enabled: no
+    enabled: yes
+    weight: 0.9

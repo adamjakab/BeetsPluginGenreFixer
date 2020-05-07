@@ -64,7 +64,17 @@ class GenreFixerCommand(Subcommand):
             self.show_version_information()
             return
 
+        self.setup_command()
         self.handle_main_task()
+
+    def setup_command(self):
+        self.dataproviders = common.setup_dataproviders(
+            self.config["providers"])
+
+    def shutdown_command(self):
+        # Shutdown dataproviders - saves cache
+        for dp in self.dataproviders:
+            dp.close_pickle_jar()
 
     def handle_main_task(self):
         items = self.retrieve_library_items()
@@ -72,20 +82,27 @@ class GenreFixerCommand(Subcommand):
             self._say("Your query did not produce any results.", log_only=False)
             return
 
-        self.dataproviders = common.setup_dataproviders(
-            self.config["providers"])
+        last_album = None
+        for item in items:
+            if self.process_item(item):
+                item.try_write()
+                item.store()
 
-        # for item in items:
-        if True:
-            item = items[0]
-            self.process_item(item)
-            # item.try_write()
-            # item.store()
+                # store genre on album as well
+                current_album = item.get("mb_releasegroupid")
+                if current_album != last_album:
+                    album = item.get_album()
+                    album["genre"] = item["genre"]
+                    album.store()
+                    last_album = current_album
 
     def process_item(self, item: Item):
         self._say("Fixing item: {}".format(item), log_only=True)
-        qtypes = ['artist', 'album', 'track']
+        current_genre = item.get("genre")
 
+        tag_groups = []
+
+        qtypes = (self.config["types"].keys())
         metadata = {
             'artist': item.get("artist"),
             'artistid': item.get("mb_artistid:"),
@@ -95,10 +112,53 @@ class GenreFixerCommand(Subcommand):
         }
 
         for dp in self.dataproviders:
-            self._say("{}: {}".format("=" * 60, dp.name))
+            # self._say("{}: {}".format("=" * 60, dp.name))
             for qtype in qtypes:
                 tags = self.get_tags_from_provider(dp, qtype, metadata)
-                self._say("tags[{}]: {}".format(qtype, tags), log_only=False)
+                # self._say("tags[{}]: {}".format(qtype, tags), log_only=False)
+                if tags:
+                    tag_groups.append({
+                        'provider': dp.name,
+                        'qtype': qtype,
+                        'tags': tags
+                    })
+
+        # self._say("Tags: {}".format(tag_groups), log_only=False)
+
+        tags = self.create_unified_tag_list(tag_groups)
+        # self._say("Unified Tags: {}".format(tags), log_only=False)
+
+        tags = sorted(tags.items(), key=operator.itemgetter(1), reverse=True)
+        # self._say("Ordered Tags: {}".format(tags), log_only=False)
+
+        _max = self.config["max_tags"].as_number()
+        _glue = self.config["tag_glue"].as_str()
+        top_tags = [v[0] for v in tags][:_max]
+        # self._say("Top Tags: {}".format(top_tags), log_only=False)
+
+        new_genre = _glue.join(top_tags)
+        self._say("Genre: {}".format(new_genre), log_only=False)
+
+        item["genre"] = new_genre
+
+        return current_genre != new_genre
+
+    def create_unified_tag_list(self, tag_groups):
+        ulist = {}
+        for tg in tag_groups:
+            provider = tg["provider"].lower()
+            pweight = self.config["providers"][provider]["weight"].as_number()
+            qtype = tg["qtype"].lower()
+            tweight = self.config["types"][qtype]["weight"].as_number()
+            tags = tg["tags"]
+            for k, v in tags.items():
+                v = v * pweight * tweight
+                # self._say("tag[{}]: {}".format(k, v), log_only=False)
+                if k in ulist:
+                    v = ulist[k] + v
+                ulist[k] = round(v, 3)
+
+        return ulist
 
     def get_tags_from_provider(self, dp, qtype="album", metadata=None):
         resp = []
@@ -115,7 +175,6 @@ class GenreFixerCommand(Subcommand):
 
         tags = common.get_normalized_tags(resp)
         tags = {common.get_formatted_tag(k): v for k, v in tags.items()}
-        tags = sorted(tags.items(), key=operator.itemgetter(1), reverse=True)
 
         return tags
 
