@@ -5,7 +5,7 @@
 import logging
 import os
 
-from beets.util.confit import Subview
+from confuse import Subview
 from beetsplug.genrefixer import dataprovider
 
 # Get values as: plg_ns['__PLUGIN_NAME__']

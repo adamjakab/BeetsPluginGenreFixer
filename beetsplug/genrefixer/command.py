@@ -9,7 +9,7 @@ from beets.ui import Subcommand, decargs
 from beets.dbcore.query import MatchQuery, AndQuery, OrQuery, \
     NoneQuery, RegexpQuery, FixedFieldSort
 from beets.library import Library, Item, parse_query_parts
-from beets.util.confit import Subview
+from confuse import Subview
 
 from beetsplug.genrefixer import common
 
